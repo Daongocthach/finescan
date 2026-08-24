@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "FineScan Example",
+    "slug": "finescan-example",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "finescan-example",
+    "plugins": ["expo-router", "@finescan/react-native"],
+    "android": {
+      "package": "com.finescan.example",
+      "permissions": ["CAMERA"]
+    }
+  }
+}
