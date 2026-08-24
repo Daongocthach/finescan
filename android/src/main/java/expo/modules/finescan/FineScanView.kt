@@ -2,12 +2,15 @@ package expo.modules.finescan
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.graphics.ImageFormat
 import android.graphics.Rect
+import android.media.Image
 import android.util.Size
 import android.widget.FrameLayout
 import androidx.camera.core.Camera
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.core.ImageProxy
 import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
@@ -21,6 +24,7 @@ import com.google.mlkit.vision.common.InputImage
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import java.nio.ByteBuffer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
@@ -79,33 +83,7 @@ class FineScanView(context: android.content.Context, appContext: AppContext) : E
         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
         .build()
 
-      analysis.setAnalyzer(analysisExecutor) { proxy ->
-        if (paused || processing.getAndSet(true)) {
-          proxy.close()
-          return@setAnalyzer
-        }
-
-        val mediaImage = proxy.image
-        if (mediaImage == null) {
-          processing.set(false)
-          proxy.close()
-          return@setAnalyzer
-        }
-
-        val image = InputImage.fromMediaImage(mediaImage, proxy.imageInfo.rotationDegrees)
-        scanner.process(image)
-          .addOnSuccessListener { barcodes ->
-            val crop = centerRoi(image.width, image.height)
-            val candidate = barcodes.firstOrNull { barcode ->
-              barcode.boundingBox?.let { Rect.intersects(it, crop) } == true
-            }
-            candidate?.let(::emitIfAllowed)
-          }
-          .addOnCompleteListener {
-            processing.set(false)
-            proxy.close()
-          }
-      }
+      analysis.setAnalyzer(analysisExecutor) { proxy -> analyze(proxy) }
 
       provider.unbindAll()
       camera = provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
@@ -113,12 +91,118 @@ class FineScanView(context: android.content.Context, appContext: AppContext) : E
     }, ContextCompat.getMainExecutor(context))
   }
 
-  private fun centerRoi(width: Int, height: Int): Rect {
-    val roiW = (width * regionWidth).toInt()
-    val roiH = (height * regionHeight).toInt()
-    val left = (width - roiW) / 2
-    val top = (height - roiH) / 2
+  private fun analyze(proxy: ImageProxy) {
+    if (paused || processing.getAndSet(true)) {
+      proxy.close()
+      return
+    }
+
+    try {
+      val rotation = proxy.imageInfo.rotationDegrees
+      val crop = centerRoiForSensor(proxy.width, proxy.height, rotation)
+      val nv21 = cropToNv21(proxy, crop)
+      val image = InputImage.fromByteArray(
+        nv21,
+        crop.width(),
+        crop.height(),
+        rotation,
+        InputImage.IMAGE_FORMAT_NV21
+      )
+
+      scanner.process(image)
+        .addOnSuccessListener { barcodes -> barcodes.firstOrNull()?.let(::emitIfAllowed) }
+        .addOnCompleteListener {
+          processing.set(false)
+          proxy.close()
+        }
+    } catch (_: Throwable) {
+      processing.set(false)
+      proxy.close()
+    }
+  }
+
+  /**
+   * The public ROI is expressed in display orientation. CameraX gives us sensor-oriented
+   * buffers, so width/height fractions swap when the frame will rotate by 90/270 degrees.
+   */
+  private fun centerRoiForSensor(width: Int, height: Int, rotation: Int): Rect {
+    val rotated = rotation == 90 || rotation == 270
+    val sensorWidthFraction = if (rotated) regionHeight else regionWidth
+    val sensorHeightFraction = if (rotated) regionWidth else regionHeight
+
+    var roiW = (width * sensorWidthFraction).toInt().coerceAtLeast(2)
+    var roiH = (height * sensorHeightFraction).toInt().coerceAtLeast(2)
+
+    // YUV420 chroma samples are 2x2, so keep crop origin and dimensions even.
+    roiW = (roiW and 1.inv()).coerceAtMost(width and 1.inv())
+    roiH = (roiH and 1.inv()).coerceAtMost(height and 1.inv())
+    val left = (((width - roiW) / 2) and 1.inv()).coerceAtLeast(0)
+    val top = (((height - roiH) / 2) and 1.inv()).coerceAtLeast(0)
     return Rect(left, top, left + roiW, top + roiH)
+  }
+
+  /** Converts only the selected YUV_420_888 ROI to NV21; the decoder never sees the full frame. */
+  private fun cropToNv21(proxy: ImageProxy, crop: Rect): ByteArray {
+    require(proxy.format == ImageFormat.YUV_420_888) { "FineScan expects YUV_420_888 frames" }
+    val planes = proxy.planes
+    require(planes.size >= 3) { "FineScan requires Y/U/V planes" }
+
+    val width = crop.width()
+    val height = crop.height()
+    val output = ByteArray(width * height + width * height / 2)
+    var out = 0
+
+    copyPlaneRegion(
+      plane = planes[0],
+      startX = crop.left,
+      startY = crop.top,
+      width = width,
+      height = height,
+      output = output,
+      outputOffset = out
+    )
+    out += width * height
+
+    val chromaWidth = width / 2
+    val chromaHeight = height / 2
+    val chromaX = crop.left / 2
+    val chromaY = crop.top / 2
+    val u = planes[1]
+    val v = planes[2]
+    val uBuffer = u.buffer.duplicate()
+    val vBuffer = v.buffer.duplicate()
+
+    for (y in 0 until chromaHeight) {
+      val uRow = (chromaY + y) * u.rowStride
+      val vRow = (chromaY + y) * v.rowStride
+      for (x in 0 until chromaWidth) {
+        val uIndex = uRow + (chromaX + x) * u.pixelStride
+        val vIndex = vRow + (chromaX + x) * v.pixelStride
+        output[out++] = vBuffer.get(vIndex)
+        output[out++] = uBuffer.get(uIndex)
+      }
+    }
+
+    return output
+  }
+
+  private fun copyPlaneRegion(
+    plane: ImageProxy.PlaneProxy,
+    startX: Int,
+    startY: Int,
+    width: Int,
+    height: Int,
+    output: ByteArray,
+    outputOffset: Int
+  ) {
+    val buffer: ByteBuffer = plane.buffer.duplicate()
+    var out = outputOffset
+    for (y in 0 until height) {
+      val rowStart = (startY + y) * plane.rowStride + startX * plane.pixelStride
+      for (x in 0 until width) {
+        output[out++] = buffer.get(rowStart + x * plane.pixelStride)
+      }
+    }
   }
 
   private fun emitIfAllowed(barcode: Barcode) {
