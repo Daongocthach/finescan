@@ -8,6 +8,7 @@
   "files": ["src", "android", "ios", "expo-module.config.json", "build"],
   "scripts": {
     "build": "expo-module build",
+    "typecheck": "tsc --noEmit",
     "clean": "expo-module clean",
     "lint": "expo-module lint",
     "test": "expo-module test",
