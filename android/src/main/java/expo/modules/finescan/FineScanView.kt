@@ -30,12 +30,18 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 class FineScanView(context: android.content.Context, appContext: AppContext) : ExpoView(context, appContext) {
-  private val previewView = PreviewView(context)
+  private val previewView = PreviewView(context).apply {
+    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+    scaleType = PreviewView.ScaleType.FILL_CENTER
+  }
   private val analysisExecutor: ExecutorService = Executors.newSingleThreadExecutor()
   private val processing = AtomicBoolean(false)
   private val onScan by EventDispatcher()
 
   private var camera: Camera? = null
+  private var cameraProvider: ProcessCameraProvider? = null
+  private val cameraBinding = AtomicBoolean(false)
+  private val cameraBound = AtomicBoolean(false)
   private var scanner: BarcodeScanner = createScanner(listOf("qr", "data-matrix"))
   private var regionWidth = 0.75
   private var regionHeight = 0.35
@@ -48,7 +54,11 @@ class FineScanView(context: android.content.Context, appContext: AppContext) : E
 
   init {
     addView(previewView, FrameLayout.LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT))
-    post { bindCamera() }
+  }
+
+  override fun onAttachedToWindow() {
+    super.onAttachedToWindow()
+    bindCamera()
   }
 
   fun setFormats(formats: List<String>) {
@@ -71,23 +81,41 @@ class FineScanView(context: android.content.Context, appContext: AppContext) : E
   }
 
   private fun bindCamera() {
-    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) return
-    val owner = appContext.currentActivity as? LifecycleOwner ?: return
+    if (cameraBound.get() || !cameraBinding.compareAndSet(false, true)) return
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+      cameraBinding.set(false)
+      return
+    }
+
+    val owner = appContext.currentActivity as? LifecycleOwner
+    if (owner == null) {
+      cameraBinding.set(false)
+      return
+    }
+
     val providerFuture = ProcessCameraProvider.getInstance(context)
-
     providerFuture.addListener({
-      val provider = providerFuture.get()
-      val preview = Preview.Builder().build().also { it.surfaceProvider = previewView.surfaceProvider }
-      val analysis = ImageAnalysis.Builder()
-        .setTargetResolution(Size(1280, 720))
-        .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-        .build()
+      try {
+        val provider = providerFuture.get()
+        cameraProvider = provider
 
-      analysis.setAnalyzer(analysisExecutor) { proxy -> analyze(proxy) }
+        val preview = Preview.Builder().build().also {
+          it.setSurfaceProvider(previewView.surfaceProvider)
+        }
+        val analysis = ImageAnalysis.Builder()
+          .setTargetResolution(Size(1280, 720))
+          .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+          .build()
 
-      provider.unbindAll()
-      camera = provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
-      camera?.cameraControl?.enableTorch(torchEnabled)
+        analysis.setAnalyzer(analysisExecutor) { proxy -> analyze(proxy) }
+
+        provider.unbindAll()
+        camera = provider.bindToLifecycle(owner, CameraSelector.DEFAULT_BACK_CAMERA, preview, analysis)
+        camera?.cameraControl?.enableTorch(torchEnabled)
+        cameraBound.set(true)
+      } finally {
+        cameraBinding.set(false)
+      }
     }, ContextCompat.getMainExecutor(context))
   }
 
@@ -225,8 +253,11 @@ class FineScanView(context: android.content.Context, appContext: AppContext) : E
   }
 
   override fun onDetachedFromWindow() {
-    scanner.close()
-    analysisExecutor.shutdown()
+    cameraProvider?.unbindAll()
+    cameraProvider = null
+    camera = null
+    cameraBound.set(false)
+    cameraBinding.set(false)
     super.onDetachedFromWindow()
   }
 }
