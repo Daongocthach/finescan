@@ -1,9 +1,9 @@
 {
   "name": "@finescan/react-native",
-  "version": "0.1.0-alpha.1",
+  "version": "0.1.0-alpha.2",
   "description": "Offline-first QR Code and Data Matrix scanner for React Native and Expo",
-  "main": "build/index.js",
-  "types": "build/index.d.ts",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
   "source": "src/index.ts",
   "files": ["src", "android", "ios", "expo-module.config.json", "build"],
   "scripts": {
