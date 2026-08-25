@@ -3,13 +3,15 @@ apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'expo-module-gradle-plugin'
 
 group = 'expo.modules.finescan'
-version = '0.1.0'
+version = '0.1.0-alpha.2'
 
 android {
   namespace "expo.modules.finescan"
+
   defaultConfig {
     minSdkVersion 24
-    targetSdkVersion 35
+    targetSdkVersion 36
+    versionName "0.1.0-alpha.2"
   }
 }
 
