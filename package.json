@@ -1,6 +1,6 @@
 {
   "name": "@finescan/react-native",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Offline-first QR Code and Data Matrix scanner for React Native and Expo",
   "main": "build/index.js",
   "types": "build/index.d.ts",
@@ -12,7 +12,7 @@
     "clean": "expo-module clean",
     "lint": "expo-module lint",
     "test": "expo-module test",
-    "prepare": "expo-module prepare"
+    "prepublishOnly": "npm run build"
   },
   "keywords": ["react-native", "expo", "barcode", "qr-code", "data-matrix", "scanner"],
   "repository": {
